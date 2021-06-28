@@ -2,8 +2,8 @@ packages: .
 
 source-repository-package
   type: git
-  location: https://github.com/hsyl20/ghc-api-compat
-  tag: 6178d75772c7d923918dfffa0b1f503dfb36d0a6
+  location: https://gitlab.haskell.org/berberman/ghc-api-compat
+  tag: c40f91549af351a126cedda71d48a6b7e6ebe725
   
 allow-newer:
   cryptohash-sha1:base,
