@@ -219,7 +219,8 @@ test-suite bios-tests
       filepath,
       directory,
       temporary,
-      ghc
+      ghc,
+      ghc-api-compat
 
   hs-source-dirs: tests/
   ghc-options: -threaded -Wall
