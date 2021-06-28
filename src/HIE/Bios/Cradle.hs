@@ -5,7 +5,6 @@
 module HIE.Bios.Cradle (
       findCradle
     , loadCradle
-    , loadCustomCradle
     , loadImplicitCradle
     , yamlConfig
     , defaultCradle
@@ -27,6 +26,7 @@ import Control.Exception (handleJust)
 import qualified Data.Yaml as Yaml
 import Data.Void
 import Data.Char (isSpace)
+import Data.Bifunctor (first)
 import System.Process
 import System.Exit
 import HIE.Bios.Types hiding (ActionName(..))
@@ -60,6 +60,7 @@ import qualified Data.Text as T
 import qualified Data.HashMap.Strict as Map
 import           Data.Maybe (fromMaybe, maybeToList)
 import           GHC.Fingerprint (fingerprintString)
+import DynFlags (dynamicGhc)
 
 hie_bios_output :: String
 hie_bios_output = "HIE_BIOS_OUTPUT"
@@ -73,10 +74,7 @@ findCradle wfile = do
 
 -- | Given root\/hie.yaml load the Cradle.
 loadCradle :: FilePath -> IO (Cradle Void)
-loadCradle = loadCradleWithOpts Types.defaultCradleOpts absurd
-
-loadCustomCradle :: Yaml.FromJSON b => (b -> Cradle a) -> FilePath -> IO (Cradle a)
-loadCustomCradle = loadCradleWithOpts Types.defaultCradleOpts
+loadCradle = loadCradleWithOpts absurd
 
 -- | Given root\/foo\/bar.hs, load an implicit cradle
 loadImplicitCradle :: Show a => FilePath -> IO (Cradle a)
@@ -91,8 +89,8 @@ loadImplicitCradle wfile = do
 --   Find a cabal file by tracing ancestor directories.
 --   Find a sandbox according to a cabal sandbox config
 --   in a cabal directory.
-loadCradleWithOpts :: (Yaml.FromJSON b) => CradleOpts -> (b -> Cradle a) -> FilePath -> IO (Cradle a)
-loadCradleWithOpts _copts buildCustomCradle wfile = do
+loadCradleWithOpts :: (Yaml.FromJSON b) => (b -> Cradle a) -> FilePath -> IO (Cradle a)
+loadCradleWithOpts buildCustomCradle wfile = do
     cradleConfig <- readCradleConfig wfile
     return $ getCradle buildCustomCradle (cradleConfig, takeDirectory wfile)
 
@@ -141,20 +139,36 @@ addCradleDeps deps c =
                 CradleNone -> pure CradleNone
          }
 
+-- | Try to infer an appropriate implicit cradle type from stuff we can find in the enclosing directories:
+--   * If a .hie-bios file is found, we can treat this as a @Bios@ cradle
+--   * If a stack.yaml file is found, we can treat this as a @Stack@ cradle
+--   * If a cabal.project or an xyz.cabal file is found, we can treat this as a @Cabal@ cradle
+inferCradleType :: FilePath -> MaybeT IO (CradleType a, FilePath)
+inferCradleType fp =
+       maybeItsBios
+   <|> maybeItsStack
+   <|> maybeItsCabal
+-- <|> maybeItsObelisk
+-- <|> maybeItsObelisk
 
+  where
+  maybeItsBios = (\wdir -> (Bios (Program $ wdir </> ".hie-bios") Nothing Nothing, wdir)) <$> biosWorkDir fp
+
+  maybeItsStack = stackExecutable >> (Stack $ StackType Nothing Nothing,) <$> stackWorkDir fp
+
+  maybeItsCabal = (Cabal $ CabalType Nothing,) <$> cabalWorkDir fp
+
+  -- maybeItsObelisk = (Obelisk,) <$> obeliskWorkDir fp
+
+  -- maybeItsBazel = (Bazel,) <$> rulesHaskellWorkDir fp
+
+
+-- | Wraps up the cradle inferred by @inferCradleType@ as a @CradleConfig@ with no dependencies
 implicitConfig :: FilePath -> MaybeT IO (CradleConfig a, FilePath)
-implicitConfig fp = do
-  (crdType, wdir) <- implicitConfig' fp
-  return (CradleConfig [] crdType, wdir)
-
-implicitConfig' :: FilePath -> MaybeT IO (CradleType a, FilePath)
-implicitConfig' fp = (\wdir ->
-         (Bios (Program $ wdir </> ".hie-bios") Nothing Nothing, wdir)) <$> biosWorkDir fp
-  --   <|> (Obelisk,) <$> obeliskWorkDir fp
-  --   <|> (Bazel,) <$> rulesHaskellWorkDir fp
-     <|> (stackExecutable >> (Stack $ StackType Nothing Nothing,) <$> stackWorkDir fp)
-     <|> ((Cabal $ CabalType Nothing,) <$> cabalWorkDir fp)
-
+implicitConfig = (fmap . first) (CradleConfig noDeps) . inferCradleType
+  where
+  noDeps :: [FilePath]
+  noDeps = []
 
 yamlConfig :: FilePath ->  MaybeT IO FilePath
 yamlConfig fp = do
@@ -171,6 +185,14 @@ readCradleConfig yamlHie = do
 
 configFileName :: FilePath
 configFileName = "hie.yaml"
+
+-- | Pass '-dynamic' flag when GHC is built with dynamic linking.
+--
+-- Append flag to options of 'defaultCradle' and 'directCradle' if GHC is dynmically linked,
+-- because unlike the case of using build tools, which means '-dynamic' can be set via
+-- '.cabal' or 'package.yaml', users have to create an explicit hie.yaml to pass this flag.
+argDynamic :: [String]
+argDynamic = ["-dynamic" | dynamicGhc]
 
 ---------------------------------------------------------------
 
@@ -225,7 +247,7 @@ defaultCradle cur_dir =
     , cradleOptsProg = CradleAction
         { actionName = Types.Default
         , runCradle = \_ _ ->
-            return (CradleSuccess (ComponentOptions [] cur_dir []))
+            return (CradleSuccess (ComponentOptions argDynamic cur_dir []))
         , runGhcCmd = runGhcCmdOnPath cur_dir
         }
     }
@@ -334,7 +356,7 @@ directCradle wdir args =
     , cradleOptsProg = CradleAction
         { actionName = Types.Direct
         , runCradle = \_ _ ->
-            return (CradleSuccess (ComponentOptions args wdir []))
+            return (CradleSuccess (ComponentOptions (args ++ argDynamic) wdir []))
         , runGhcCmd = runGhcCmdOnPath wdir
         }
     }
@@ -467,6 +489,7 @@ type GhcProc = (FilePath, [String])
 withCabalWrapperTool :: GhcProc -> FilePath -> IO FilePath
 withCabalWrapperTool (mbGhc, ghcArgs) wdir = do
     cacheDir <- getCacheDir ""
+    createDirectoryIfMissing True cacheDir
     let wrapperContents = if isWindows then cabalWrapperHs else cabalWrapper
         suffix fp = if isWindows then fp <.> "exe" else fp
     let srcHash = show (fingerprintString wrapperContents)
@@ -477,14 +500,13 @@ withCabalWrapperTool (mbGhc, ghcArgs) wdir = do
       if isWindows
       then do
         withSystemTempDirectory "hie-bios" $ \ tmpDir -> do
-          createDirectoryIfMissing True cacheDir
           let wrapper_hs = cacheDir </> wrapper_name <.> "hs"
           writeFile wrapper_hs wrapperContents
           let ghc = (proc mbGhc $
                       ghcArgs ++ ["-rtsopts=ignore", "-outputdir", tmpDir, "-o", wrapper_fp, wrapper_hs])
                       { cwd = Just wdir }
           readCreateProcess ghc "" >>= putStr
-      else withFile wrapper_fp WriteMode $ \h -> hPutStr h wrapperContents
+      else writeFile wrapper_fp wrapperContents
     setMode wrapper_fp
     pure wrapper_fp
   where
@@ -599,10 +621,14 @@ stackCradle wdir mc syaml =
     , cradleOptsProg   = CradleAction
         { actionName = Types.Stack
         , runCradle = stackAction wdir mc syaml
-        , runGhcCmd = \args ->
-            readProcessWithCwd wdir "stack"
-              (stackYamlProcessArgs syaml <> ["exec", "--silent", "ghc", "--"] <> args)
-              ""
+        , runGhcCmd = \args -> do
+            -- Setup stack silently, since stack might print stuff to stdout in some cases (e.g. on Win)
+            -- Issue 242 from HLS: https://github.com/haskell/haskell-language-server/issues/242
+            stackSetup <- readProcessWithCwd wdir "stack" (stackYamlProcessArgs syaml <> ["setup", "--silent"]) ""
+            stackSetup `bindIO` \_ ->
+              readProcessWithCwd wdir "stack"
+                (stackYamlProcessArgs syaml <> ["exec", "ghc", "--"] <> args)
+                ""
         }
     }
 

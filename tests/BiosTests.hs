@@ -26,6 +26,10 @@ import System.Info.Extra ( isWindows )
 import System.IO.Temp
 import System.Exit (ExitCode(ExitSuccess, ExitFailure))
 import Control.Monad.Extra (unlessM)
+import DynFlags (dynamicGhc)
+
+argDynamic :: [String]
+argDynamic = ["-dynamic" | dynamicGhc]
 
 main :: IO ()
 main = do
@@ -56,7 +60,7 @@ main = do
                 runCradle (cradleOptsProg crdl) (const (pure ())) "./a/A.hs"
                 >>= \case
                   CradleSuccess r ->
-                    componentOptions r `shouldMatchList` ["a"]
+                    componentOptions r `shouldMatchList` ["a"] <> argDynamic
                   _ -> expectationFailure "Cradle could not be loaded"
 
         , testCaseSteps "Can load symlinked module" $ \step -> do
@@ -71,7 +75,7 @@ main = do
                 runCradle (cradleOptsProg crdl) (const (pure ())) "./b/A.hs"
                 >>= \case
                   CradleSuccess r ->
-                    componentOptions r `shouldMatchList` ["b"]
+                    componentOptions r `shouldMatchList` ["b"] <> argDynamic
                   _ -> expectationFailure "Cradle could not be loaded"
 
         , testCaseSteps "Can not load symlinked module that is ignored" $ \step -> do
@@ -372,17 +376,17 @@ stackYaml resolver pkgs = unlines
 stackYamlResolver :: String
 stackYamlResolver =
 #if (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,10,1,0)))
-  "nightly-2020-06-25"
+  "lts-17.7" -- GHC 8.10.4
 #elif (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,8,1,0)))
-  "lts-15.10"
+  "lts-16.31" -- GHC 8.8.4
 #elif (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,6,5,0)))
-  "lts-14.17"
+  "lts-14.27" -- GHC 8.6.5
 #elif (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,6,4,0)))
-  "lts-13.19"
+  "lts-13.19" -- GHC 8.6.4
 #elif (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,4,4,0)))
-  "lts-12.26"
+  "lts-12.26" -- GHC 8.4.4
 #elif (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,4,3,0)))
-  "lts-12.26"
+  "lts-12.14" -- GHC 8.4.3
 #elif (defined(MIN_VERSION_GLASGOW_HASKELL) && (MIN_VERSION_GLASGOW_HASKELL(8,2,2,0)))
-  "lts-11.22"
+  "lts-11.22" -- GHC 8.2.2
 #endif

@@ -3,22 +3,14 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveTraversable #-}
 module HIE.Bios.Types where
 
 import           System.Exit
-import           System.IO
 import           Control.Exception              ( Exception )
 
 data BIOSVerbosity = Silent | Verbose
-
-data CradleOpts = CradleOpts
-                { cradleOptsVerbosity :: BIOSVerbosity
-                , cradleOptsHandle :: Maybe Handle
-                -- ^ The handle where to send output to, if not set, stderr.
-                }
-
-defaultCradleOpts :: CradleOpts
-defaultCradleOpts = CradleOpts Silent Nothing
 
 ----------------------------------------------------------------
 
@@ -74,7 +66,26 @@ data CradleLoadResult r
   = CradleSuccess r -- ^ The cradle succeeded and returned these options.
   | CradleFail CradleError -- ^ We tried to load the cradle and it failed.
   | CradleNone -- ^ No attempt was made to load the cradle.
-  deriving (Functor, Show, Eq)
+ deriving (Functor, Foldable, Traversable, Show, Eq)
+
+
+instance Applicative CradleLoadResult where
+  pure = CradleSuccess
+  CradleSuccess a <*> CradleSuccess b = CradleSuccess (a b)
+  CradleFail err <*> _ = CradleFail err
+  _ <*> CradleFail err = CradleFail err
+  _ <*> _ = CradleNone
+
+instance Monad CradleLoadResult where
+  return = CradleSuccess
+  CradleSuccess r >>= k = k r
+  CradleFail err >>= _ = CradleFail err
+  CradleNone >>= _ = CradleNone
+
+bindIO :: CradleLoadResult a -> (a -> IO (CradleLoadResult b)) -> IO (CradleLoadResult b)
+bindIO  (CradleSuccess r) k = k r
+bindIO (CradleFail err) _ = return $ CradleFail err
+bindIO CradleNone _ = return CradleNone
 
 
 data CradleError = CradleError
